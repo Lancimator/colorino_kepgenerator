@@ -56,6 +56,14 @@ class CrackSettings:
             jitter=jitter,
         )
 
+    def suffix(self) -> str:
+        resolved = self.resolved()
+        variation_str = f"{resolved.variation:.3f}".rstrip("0").rstrip(".")
+        return (
+            f"-minA{resolved.min_area}-maxA{resolved.max_area}-"
+            f"c{resolved.cell_size}-V{variation_str}-J{resolved.jitter}"
+        )
+
 
 DEFAULT_SETTINGS = CrackSettings()
 
@@ -375,6 +383,12 @@ def unique_destination(path: Path, *, suffix: str = "") -> Path:
     return candidate
 
 
+def generate_destination_name(source: Path, destination_dir: Path, settings: CrackSettings) -> Path:
+    suffix = settings.suffix()
+    base = destination_dir / f"{source.stem}{suffix}{source.suffix}"
+    return unique_destination(base)
+
+
 def resize_images(
     source_dir: Path,
     destination_dir: Path,
@@ -393,6 +407,8 @@ def resize_images(
     processed = 0
     skipped: list[str] = []
 
+    resolved = settings.resolved()
+
     for path in sorted(source_dir.iterdir()):
         if not path.is_file():
             continue
@@ -408,7 +424,7 @@ def resize_images(
                 processed_img,
                 fill_color=FILL_COLOR,
                 seed=path.name,
-                settings=settings,
+                settings=resolved,
             )
 
             if path.suffix.lower() in {".jpg", ".jpeg"} and processed_img.mode != "RGB":
@@ -420,7 +436,7 @@ def resize_images(
             elif path.suffix.lower() == ".png":
                 save_kwargs["optimize"] = True
 
-            destination_path = unique_destination(destination_dir / path.name)
+            destination_path = generate_destination_name(path, destination_dir, resolved)
             processed_img.save(destination_path, **save_kwargs)
             processed += 1
 
