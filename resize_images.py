@@ -10,7 +10,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, List, Optional
 
 from PIL import Image, ImageDraw
 
@@ -22,6 +22,12 @@ BLACK_THRESHOLD = 40
 WHITE_TOLERANCE = 12
 BACKGROUND_TOLERANCE = 8
 
+MIN_AREA_RANGE = (1500, 10000)
+MAX_AREA_RANGE = (2000, 20000)
+CELL_SIZE_RANGE = (20, 200)
+VARIATION_RANGE = (0.05, 1.0)
+JITTER_RANGE = (1, 20)
+
 
 @dataclass
 class CrackSettings:
@@ -29,9 +35,9 @@ class CrackSettings:
 
     min_area: int = 1500
     max_area: int = 2000
-    cell_size: Optional[int] = None
-    variation: Optional[float] = None
-    jitter: Optional[int] = None
+    cell_size: Optional[int] = 35
+    variation: Optional[float] = 0.01
+    jitter: Optional[int] = 13
 
     def resolved(self) -> "CrackSettings":
         target_area = max(1.0, (self.min_area + self.max_area) / 2.0)
@@ -66,6 +72,27 @@ class CrackSettings:
 
 
 DEFAULT_SETTINGS = CrackSettings()
+
+
+def random_settings(count: int) -> List[CrackSettings]:
+    rng = random.Random()
+    settings_list: List[CrackSettings] = []
+    for _ in range(count):
+        min_area = rng.randint(*MIN_AREA_RANGE)
+        max_area = rng.randint(max(min_area + 100, MAX_AREA_RANGE[0]), MAX_AREA_RANGE[1])
+        cell_size = rng.randint(*CELL_SIZE_RANGE)
+        variation = rng.uniform(*VARIATION_RANGE)
+        jitter = rng.randint(*JITTER_RANGE)
+        settings_list.append(
+            CrackSettings(
+                min_area=min_area,
+                max_area=max_area,
+                cell_size=cell_size,
+                variation=variation,
+                jitter=jitter,
+            )
+        )
+    return settings_list
 
 
 def get_lanczos_filter() -> int:
@@ -448,7 +475,7 @@ def resize_images(
     return processed
 
 
-def launch_gui(initial: CrackSettings) -> CrackSettings:
+def launch_gui(initial: CrackSettings) -> tuple[List[CrackSettings], bool]:
     import tkinter as tk
     from tkinter import messagebox
 
@@ -471,10 +498,25 @@ def launch_gui(initial: CrackSettings) -> CrackSettings:
     add_row("Cell size", str(resolved.cell_size), 2)
     add_row("Variation", f"{resolved.variation:.3f}", 3)
     add_row("Jitter", str(resolved.jitter), 4)
+    add_row("Random runs", "0", 5)
 
-    result: dict[str, CrackSettings] = {}
+    result: dict[str, List[CrackSettings]] = {}
 
     def on_submit() -> None:
+        random_runs_str = entries["Random runs"].get()
+        try:
+            random_runs = int(random_runs_str)
+            if random_runs < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Invalid input", "Random runs must be a non-negative integer.")
+            return
+
+        if random_runs > 0:
+            result["settings_list"] = random_settings(random_runs)
+            root.destroy()
+            return
+
         try:
             min_area = int(entries["Minimum area"].get())
             max_area = int(entries["Maximum area"].get())
@@ -490,28 +532,30 @@ def launch_gui(initial: CrackSettings) -> CrackSettings:
             )
             return
 
-        result["settings"] = CrackSettings(
-            min_area=min_area,
-            max_area=max_area,
-            cell_size=cell_size,
-            variation=variation,
-            jitter=jitter,
-        )
+        result["settings_list"] = [
+            CrackSettings(
+                min_area=min_area,
+                max_area=max_area,
+                cell_size=cell_size,
+                variation=variation,
+                jitter=jitter,
+            )
+        ]
         root.destroy()
 
     def on_cancel() -> None:
         root.destroy()
 
     button_frame = tk.Frame(root)
-    button_frame.grid(row=5, column=0, columnspan=2, pady=8)
+    button_frame.grid(row=6, column=0, columnspan=2, pady=8)
     tk.Button(button_frame, text="Cancel", command=on_cancel).pack(side=tk.RIGHT, padx=4)
     tk.Button(button_frame, text="Start", command=on_submit).pack(side=tk.RIGHT, padx=4)
 
     root.mainloop()
 
-    if "settings" not in result:
+    if "settings_list" not in result:
         raise SystemExit("Processing cancelled from GUI.")
-    return result["settings"].resolved()
+    return result["settings_list"], True
 
 
 def parse_args() -> argparse.Namespace:
@@ -542,6 +586,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable the GUI and rely entirely on CLI arguments.",
     )
+    parser.add_argument(
+        "--random-runs",
+        type=int,
+        default=0,
+        help="Generate this many random parameter sets (CLI mode only).",
+    )
     return parser.parse_args()
 
 
@@ -565,17 +615,23 @@ def main() -> None:
     settings = build_settings(args)
 
     if args.no_gui:
-        settings = settings.resolved()
+        settings_list: Iterable[CrackSettings]
+        if args.random_runs > 0:
+            settings_list = random_settings(args.random_runs)
+        else:
+            settings_list = [settings.resolved()]
     else:
-        settings = launch_gui(settings)
+        settings_list, _ = launch_gui(settings)
 
     size = (args.width, args.height)
-    resize_images(
-        Path(args.source),
-        Path(args.destination),
-        size,
-        settings=settings,
-    )
+    source = Path(args.source)
+    dest = Path(args.destination)
+
+    total = 0
+    for setting in settings_list:
+        total += resize_images(source, dest, size, settings=setting)
+
+    print(f"Total images generated: {total}")
 
 
 if __name__ == "__main__":
